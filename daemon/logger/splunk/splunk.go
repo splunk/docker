@@ -226,7 +226,7 @@ func parseUrl(ctx logger.Context) (*url.URL, error) {
 		return nil, fmt.Errorf("%s: expected format shema://dns_name_or_ip:port for %s", Name, SplunkUrl)
 	}
 
-	splunkUrl.Path = "/services/collector/event"
+	splunkUrl.Path = "/services/collector/event/1.0"
 
 	return splunkUrl, nil
 }
