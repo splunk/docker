@@ -80,7 +80,7 @@ func New(ctx logger.Context) (logger.Logger, error) {
 	// Splunk Token is required parameter
 	splunkToken, ok := ctx.Config[splunkTokenKey]
 	if !ok {
-		return nil, fmt.Errorf("%s: %s is expected", splunkTokenKey)
+		return nil, fmt.Errorf("%s: %s is expected", driverName, splunkTokenKey)
 	}
 
 	tlsConfig := &tls.Config{}
@@ -211,7 +211,7 @@ func ValidateLogOpt(cfg map[string]string) error {
 func parseURL(ctx logger.Context) (*url.URL, error) {
 	splunkURLStr, ok := ctx.Config[splunkURLKey]
 	if !ok {
-		return nil, fmt.Errorf("%s: %s is expected", splunkURLKey)
+		return nil, fmt.Errorf("%s: %s is expected", driverName, splunkURLKey)
 	}
 
 	splunkURL, err := url.Parse(splunkURLStr)
