@@ -135,7 +135,7 @@ func New(ctx logger.Context) (logger.Logger, error) {
 	// Pull out user data
 	for k,v := range ctx.Config {
 		if strings.HasPrefix(k, splunkDataKey) {
-			key := k[11:len(k)]
+			key := k[12:len(k)]
 			data[key] = v
 		}
 	}
