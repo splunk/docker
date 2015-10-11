@@ -56,7 +56,7 @@ type splunkMessageEvent struct {
 	Line        string `json:"line"`
 	ContainerID string `json:"containerId"`
 	Source      string `json:"source"`
-	Data        map[string]string `json:"data"`
+	Data        map[string]string `json:"data,omitempty"`
 }
 
 func init() {
