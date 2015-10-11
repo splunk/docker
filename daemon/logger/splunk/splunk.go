@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 
 	"github.com/Sirupsen/logrus"
 	"github.com/docker/docker/daemon/logger"
@@ -29,6 +30,7 @@ const (
 	splunkCAPathKey             = "splunk-capath"
 	splunkCANameKey             = "splunk-caname"
 	splunkInsecureSkipVerifyKey = "splunk-insecureskipverify"
+	splunkDataKey               = "splunk-data-"
 )
 
 type splunkLogger struct {
@@ -38,6 +40,7 @@ type splunkLogger struct {
 	url         string
 	auth        string
 	nullMessage *splunkMessage
+	data        *map[string]string
 }
 
 type splunkMessage struct {
@@ -53,6 +56,7 @@ type splunkMessageEvent struct {
 	Line        string `json:"line"`
 	ContainerID string `json:"containerId"`
 	Source      string `json:"source"`
+	Data        map[string]string `json:"data"`
 }
 
 func init() {
@@ -126,12 +130,23 @@ func New(ctx logger.Context) (logger.Logger, error) {
 	nullMessage.SourceType = ctx.Config[splunkSourceTypeKey]
 	nullMessage.Index = ctx.Config[splunkIndexKey]
 
+	var data = make(map[string]string)
+
+	// Pull out user data
+	for k,v := range ctx.Config {
+		if strings.HasPrefix(k, splunkDataKey) {
+			key := k[11:len(k)]
+			data[key] = v
+		}
+	}
+
 	logger := &splunkLogger{
 		client:      client,
 		transport:   transport,
 		url:         splunkURL.String(),
 		auth:        "Splunk " + splunkToken,
 		nullMessage: nullMessage,
+		data: &data,
 	}
 
 	err = verifySplunkConnection(logger)
@@ -142,6 +157,7 @@ func New(ctx logger.Context) (logger.Logger, error) {
 	return logger, nil
 }
 
+
 func (l *splunkLogger) Log(msg *logger.Message) error {
 	// Construct message as a copy of nullMessage
 	message := *l.nullMessage
@@ -150,6 +166,7 @@ func (l *splunkLogger) Log(msg *logger.Message) error {
 		Line:        string(msg.Line),
 		ContainerID: msg.ContainerID,
 		Source:      msg.Source,
+		Data:        *l.data,
 	}
 
 	jsonEvent, err := json.Marshal(&message)
@@ -202,7 +219,9 @@ func ValidateLogOpt(cfg map[string]string) error {
 		case splunkCANameKey:
 		case splunkInsecureSkipVerifyKey:
 		default:
-			return fmt.Errorf("unknown log opt '%s' for %s log driver", key, driverName)
+			if !strings.HasPrefix(key, splunkDataKey) {
+				return fmt.Errorf("unknown log opt '%s' for %s log driver", key, driverName)
+			}
 		}
 	}
 	return nil
