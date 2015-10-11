@@ -287,7 +287,7 @@ __docker_log_driver_options() {
 	local json_file_options="max-file max-size"
 	local syslog_options="syslog-address syslog-facility tag"
 	local awslogs_options="awslogs-region awslogs-group awslogs-stream"
-	local splunk_options="splunk-caname splunk-capath splunk-index splunk-insecureskipverify splunk-source splunk-sourcetype splunk-token splunk-url"
+	local splunk_options="splunk-caname splunk-capath splunk-data- splunk-index splunk-insecureskipverify splunk-source splunk-sourcetype splunk-token splunk-url"
 
 	case $(__docker_value_of_option --log-driver) in
 		'')
