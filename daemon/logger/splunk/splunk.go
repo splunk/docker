@@ -15,6 +15,7 @@ import (
 	"strconv"
 
 	"github.com/Sirupsen/logrus"
+	"github.com/docker/distribution/uuid"
 	"github.com/docker/docker/daemon/logger"
 	"github.com/docker/docker/daemon/logger/loggerutils"
 	"github.com/docker/docker/pkg/urlutil"
@@ -30,6 +31,8 @@ const (
 	splunkCAPathKey             = "splunk-capath"
 	splunkCANameKey             = "splunk-caname"
 	splunkInsecureSkipVerifyKey = "splunk-insecureskipverify"
+	splunkFormatKey             = "splunk-format"
+	splunkVerifyConnectionKey   = "splunk-verifyconnection"
 	envKey                      = "env"
 	labelsKey                   = "labels"
 	tagKey                      = "tag"
@@ -39,9 +42,24 @@ type splunkLogger struct {
 	client    *http.Client
 	transport *http.Transport
 
-	url         string
 	auth        string
+	channel     string
+	rawFormat   bool
+}
+
+type splunkLoggerJson struct {
+	splunkLogger
+
+	url string
 	nullMessage *splunkMessage
+}
+
+type splunkLoggerRaw struct {
+	splunkLogger
+
+	url *url.URL
+	urlValues url.Values
+	prefix []byte
 }
 
 type splunkMessage struct {
@@ -122,39 +140,94 @@ func New(ctx logger.Context) (logger.Logger, error) {
 		Transport: transport,
 	}
 
-	var nullMessage = &splunkMessage{
-		Host: hostname,
+	rawFormat := false
+	if splunkFormat, ok := ctx.Config[splunkFormatKey]; ok {
+		switch splunkFormat {
+		case "json":
+		case "raw":
+			rawFormat = true
+		default:
+			return nil, fmt.Errorf("Unknown format specified %s, supported formats are json and raw", splunkFormat);
+		}
 	}
-
-	// Optional parameters for messages
-	nullMessage.Source = ctx.Config[splunkSourceKey]
-	nullMessage.SourceType = ctx.Config[splunkSourceTypeKey]
-	nullMessage.Index = ctx.Config[splunkIndexKey]
 
 	tag, err := loggerutils.ParseLogTag(ctx, "{{.ID}}")
 	if err != nil {
 		return nil, err
 	}
-	nullMessage.Event.Tag = tag
-	nullMessage.Event.Attrs = ctx.ExtraAttributes(nil)
+
+	attrs := ctx.ExtraAttributes(nil)
+
+	source := ctx.Config[splunkSourceKey]
+	sourceType := ctx.Config[splunkSourceTypeKey]
+	index := ctx.Config[splunkIndexKey]
 
 	logger := &splunkLogger{
 		client:      client,
 		transport:   transport,
-		url:         splunkURL.String(),
 		auth:        "Splunk " + splunkToken,
-		nullMessage: nullMessage,
+		channel:     uuid.Generate().String(),
 	}
 
-	err = verifySplunkConnection(logger)
-	if err != nil {
-		return nil, err
+	// By default we verify connection, but we allow use to skip that
+	verifyConnection := true
+	if verifyConnectionStr, ok := ctx.Config[splunkVerifyConnectionKey]; ok {
+		var err error
+		verifyConnection, err = strconv.ParseBool(verifyConnectionStr)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if verifyConnection {
+		err = verifySplunkConnection(logger, splunkURL.String())
+		if err != nil {
+			return nil, err
+		}
 	}
 
-	return logger, nil
+	if rawFormat {
+		splunkURL.Path = "/services/collector/raw/1.0"
+		v := url.Values{}
+		if hostname != "" {
+			v.Set("host", hostname)
+		}
+		if source != "" {
+			v.Set("source", source)
+		}
+		if sourceType != "" {
+			v.Set("sourcetype", sourceType)
+		}
+		if index != "" {
+			v.Set("index", index)
+		}
+		var prefix bytes.Buffer
+		prefix.WriteString(tag)
+		prefix.WriteString(" ")
+		for key, value := range attrs {
+			prefix.WriteString(key)
+			prefix.WriteString("=")
+			prefix.WriteString(value)
+			prefix.WriteString(" ")
+		}
+		return &splunkLoggerRaw{*logger, splunkURL, v, prefix.Bytes()}, nil
+	} else {
+		var nullMessage = &splunkMessage{
+			Host: hostname,
+			Source: source,
+			SourceType: sourceType,
+			Index: index,
+		}
+
+		nullMessage.Event.Tag = tag
+		nullMessage.Event.Attrs = attrs
+
+		splunkURL.Path = "/services/collector/event/1.0"
+
+		return &splunkLoggerJson{*logger, splunkURL.String(), nullMessage}, nil
+	}
 }
 
-func (l *splunkLogger) Log(msg *logger.Message) error {
+func (l *splunkLoggerJson) Log(msg *logger.Message) error {
 	// Construct message as a copy of nullMessage
 	message := *l.nullMessage
 	message.Time = fmt.Sprintf("%f", float64(msg.Timestamp.UnixNano())/1000000000)
@@ -165,11 +238,24 @@ func (l *splunkLogger) Log(msg *logger.Message) error {
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequest("POST", l.url, bytes.NewBuffer(jsonEvent))
+	return l.postMessage(l.url, jsonEvent)
+}
+
+func (l *splunkLoggerRaw) Log(msg *logger.Message) error {
+	urlCopy := l.url
+	urlValuesCopy := l.urlValues
+	urlValuesCopy.Set("time", strconv.FormatFloat(float64(msg.Timestamp.UnixNano())/1000000000, 'f', 3, 64))
+	urlCopy.RawQuery = urlValuesCopy.Encode()
+	return l.postMessage(urlCopy.String(), append(l.prefix, msg.Line...))
+}
+
+func (l *splunkLogger) postMessage(url string, msg []byte) error {
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(msg))
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Authorization", l.auth)
+	req.Header.Set("x-splunk-request-channel", l.channel)
 	res, err := l.client.Do(req)
 	if err != nil {
 		return err
@@ -208,6 +294,8 @@ func ValidateLogOpt(cfg map[string]string) error {
 		case splunkCAPathKey:
 		case splunkCANameKey:
 		case splunkInsecureSkipVerifyKey:
+		case splunkFormatKey:
+		case splunkVerifyConnectionKey:
 		case envKey:
 		case labelsKey:
 		case tagKey:
@@ -237,13 +325,11 @@ func parseURL(ctx logger.Context) (*url.URL, error) {
 		return nil, fmt.Errorf("%s: expected format scheme://dns_name_or_ip:port for %s", driverName, splunkURLKey)
 	}
 
-	splunkURL.Path = "/services/collector/event/1.0"
-
 	return splunkURL, nil
 }
 
-func verifySplunkConnection(l *splunkLogger) error {
-	req, err := http.NewRequest("OPTIONS", l.url, nil)
+func verifySplunkConnection(l *splunkLogger, url string) error {
+	req, err := http.NewRequest("OPTIONS", url, nil)
 	if err != nil {
 		return err
 	}
